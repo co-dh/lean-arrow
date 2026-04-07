@@ -20,6 +20,18 @@ opaque Col.mean [IsNumeric d] : @& Col d → IO (Val .float64)
 opaque Col.count : @& Col d → IO Nat
 @[extern "lean_arrow_count_distinct"]
 opaque Col.countDistinct : @& Col d → IO Nat
+@[extern "lean_arrow_any"]
+opaque Col.any : @& Col .bool → IO Bool
+@[extern "lean_arrow_all"]
+opaque Col.all : @& Col .bool → IO Bool
+@[extern "lean_arrow_product"]
+opaque Col.product [IsNumeric d] : @& Col d → IO (Val d)
+@[extern "lean_arrow_variance"]
+opaque Col.variance [IsNumeric d] : @& Col d → IO (Val .float64)
+@[extern "lean_arrow_stddev"]
+opaque Col.stddev [IsNumeric d] : @& Col d → IO (Val .float64)
+@[extern "lean_arrow_approx_median"]
+opaque Col.approxMedian [IsNumeric d] : @& Col d → IO (Val .float64)
 
 -- Scalar extraction
 @[extern "lean_arrow_val_to_string"]

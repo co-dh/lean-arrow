@@ -111,6 +111,16 @@ opaque Col.getFloat64 : @& Col .float64 → @& UInt64 → IO (Option Float)
 @[extern "lean_arrow_col_get_string"]
 opaque Col.getString : @& Col .string → @& UInt64 → IO (Option String)
 
+-- Generic element access — dispatches to typed getter via Arrow type_id
+@[extern "lean_arrow_col_get"]
+opaque Col.get : @& Col d → @& UInt64 → IO (Option d.Lean)
+
+instance : GetElem (Col d) Nat (IO (Option d.Lean)) (fun _ _ => True) where
+  getElem c i _ := Col.get c i.toUInt64
+
+instance : GetElem (IO (Col d)) Nat (IO (Option d.Lean)) (fun _ _ => True) where
+  getElem c i _ := do (← c).get i.toUInt64
+
 -- Compute: arithmetic (numeric types only)
 @[extern "lean_arrow_add"]
 opaque Col.add [IsNumeric d] : @& Col d → @& Col d → IO (Col d)
@@ -122,6 +132,63 @@ opaque Col.mul [IsNumeric d] : @& Col d → @& Col d → IO (Col d)
 opaque Col.div [IsNumeric d] : @& Col d → @& Col d → IO (Col d)
 @[extern "lean_arrow_neg"]
 opaque Col.neg [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_abs"]
+opaque Col.abs [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_power"]
+opaque Col.power [IsNumeric d] : @& Col d → @& Col d → IO (Col d)
+@[extern "lean_arrow_sqrt"]
+opaque Col.sqrt [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_sign"]
+opaque Col.sign [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_ceil"]
+opaque Col.ceil [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_floor"]
+opaque Col.floor [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_trunc"]
+opaque Col.trunc [IsNumeric d] : @& Col d → IO (Col d)
+
+-- Math/trig (operate on float columns; Arrow errors on int input)
+@[extern "lean_arrow_sin"]
+opaque Col.sin [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_cos"]
+opaque Col.cos [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_tan"]
+opaque Col.tan [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_asin"]
+opaque Col.asin [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_acos"]
+opaque Col.acos [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_atan"]
+opaque Col.atan [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_atan2"]
+opaque Col.atan2 [IsNumeric d] : @& Col d → @& Col d → IO (Col d)
+@[extern "lean_arrow_ln"]
+opaque Col.ln [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_log2"]
+opaque Col.log2 [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_log10"]
+opaque Col.log10 [IsNumeric d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_log1p"]
+opaque Col.log1p [IsNumeric d] : @& Col d → IO (Col d)
+
+-- Bitwise (integer types only)
+@[extern "lean_arrow_bit_and"]
+opaque Col.bitAnd [IsIntegral d] : @& Col d → @& Col d → IO (Col d)
+@[extern "lean_arrow_bit_or"]
+opaque Col.bitOr [IsIntegral d] : @& Col d → @& Col d → IO (Col d)
+@[extern "lean_arrow_bit_xor"]
+opaque Col.bitXor [IsIntegral d] : @& Col d → @& Col d → IO (Col d)
+@[extern "lean_arrow_bit_not"]
+opaque Col.bitNot [IsIntegral d] : @& Col d → IO (Col d)
+@[extern "lean_arrow_shift_left"]
+opaque Col.shiftLeft [IsIntegral d] : @& Col d → @& Col d → IO (Col d)
+@[extern "lean_arrow_shift_right"]
+opaque Col.shiftRight [IsIntegral d] : @& Col d → @& Col d → IO (Col d)
+
+instance [IsNumeric d] : HAdd (IO (Col d)) (IO (Col d)) (IO (Col d)) where hAdd a b := do Col.add (← a) (← b)
+instance [IsNumeric d] : HSub (IO (Col d)) (IO (Col d)) (IO (Col d)) where hSub a b := do Col.sub (← a) (← b)
+instance [IsNumeric d] : HMul (IO (Col d)) (IO (Col d)) (IO (Col d)) where hMul a b := do Col.mul (← a) (← b)
+instance [IsNumeric d] : HDiv (IO (Col d)) (IO (Col d)) (IO (Col d)) where hDiv a b := do Col.div (← a) (← b)
 
 -- Compute: comparison (returns bool column)
 @[extern "lean_arrow_eq"]
@@ -137,6 +204,20 @@ opaque Col.lte [IsOrd d] : @& Col d → @& Col d → IO (Col .bool)
 @[extern "lean_arrow_gte"]
 opaque Col.gte [IsOrd d] : @& Col d → @& Col d → IO (Col .bool)
 
+-- IO-level comparison operators (element-wise → Col .bool)
+def Col.eqIO (a b : IO (Col d)) : IO (Col .bool) := do Col.eq (← a) (← b)
+def Col.neqIO (a b : IO (Col d)) : IO (Col .bool) := do Col.neq (← a) (← b)
+def Col.ltIO [IsOrd d] (a b : IO (Col d)) : IO (Col .bool) := do Col.lt (← a) (← b)
+def Col.gtIO [IsOrd d] (a b : IO (Col d)) : IO (Col .bool) := do Col.gt (← a) (← b)
+def Col.lteIO [IsOrd d] (a b : IO (Col d)) : IO (Col .bool) := do Col.lte (← a) (← b)
+def Col.gteIO [IsOrd d] (a b : IO (Col d)) : IO (Col .bool) := do Col.gte (← a) (← b)
+infixl:50 " =. " => Col.eqIO
+infixl:50 " ≠. " => Col.neqIO
+infixl:50 " <. " => Col.ltIO
+infixl:50 " >. " => Col.gtIO
+infixl:50 " ≤. " => Col.lteIO
+infixl:50 " ≥. " => Col.gteIO
+
 -- Compute: vector operations
 @[extern "lean_arrow_filter"]
 opaque Col.filter : @& Col d → @& Col .bool → IO (Col d)
@@ -148,5 +229,83 @@ opaque Col.sort [IsOrd d] : @& Col d → @& Bool → IO (Col d)
 opaque Col.sortIndices [IsOrd d] : @& Col d → @& Bool → IO (Col .int64)
 @[extern "lean_arrow_unique"]
 opaque Col.unique : @& Col d → IO (Col d)
+
+-- Validity / null handling
+@[extern "lean_arrow_is_nulls"]
+opaque Col.isNulls : @& Col d → IO (Col .bool)
+@[extern "lean_arrow_is_valids"]
+opaque Col.isValids : @& Col d → IO (Col .bool)
+@[extern "lean_arrow_is_nan"]
+opaque Col.isNan [IsNumeric d] : @& Col d → IO (Col .bool)
+@[extern "lean_arrow_is_inf"]
+opaque Col.isInf [IsNumeric d] : @& Col d → IO (Col .bool)
+@[extern "lean_arrow_is_finite"]
+opaque Col.isFinite [IsNumeric d] : @& Col d → IO (Col .bool)
+@[extern "lean_arrow_drop_null"]
+opaque Col.dropNull : @& Col d → IO (Col d)
+@[extern "lean_arrow_fill_null"]
+opaque Col.fillNull : @& Col d → @& Col d → IO (Col d)
+
+-- Conditional
+@[extern "lean_arrow_if_else"]
+opaque Col.ifElse : @& Col .bool → @& Col d → @& Col d → IO (Col d)
+
+-- Set membership
+@[extern "lean_arrow_is_in"]
+opaque Col.isIn : @& Col d → @& Col d → IO (Col .bool)
+
+-- String operations (monomorphic on Col .string)
+@[extern "lean_arrow_str_upper"]
+opaque Col.upper : @& Col .string → IO (Col .string)
+@[extern "lean_arrow_str_lower"]
+opaque Col.lower : @& Col .string → IO (Col .string)
+@[extern "lean_arrow_str_length"]
+opaque Col.strLen : @& Col .string → IO (Col .int32)
+@[extern "lean_arrow_str_reverse"]
+opaque Col.reverse : @& Col .string → IO (Col .string)
+@[extern "lean_arrow_str_trim"]
+opaque Col.trim : @& Col .string → @& String → IO (Col .string)
+@[extern "lean_arrow_str_starts_with"]
+opaque Col.startsWith : @& Col .string → @& String → IO (Col .bool)
+@[extern "lean_arrow_str_ends_with"]
+opaque Col.endsWith : @& Col .string → @& String → IO (Col .bool)
+@[extern "lean_arrow_str_contains"]
+opaque Col.contains : @& Col .string → @& String → IO (Col .bool)
+@[extern "lean_arrow_str_replace"]
+opaque Col.replace : @& Col .string → @& String → @& String → IO (Col .string)
+
+-- Temporal extraction (IsTemporal → Col .int64)
+@[extern "lean_arrow_year"]
+opaque Col.year [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_month"]
+opaque Col.month [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_day"]
+opaque Col.day [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_day_of_week"]
+opaque Col.dayOfWeek [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_day_of_year"]
+opaque Col.dayOfYear [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_hour"]
+opaque Col.hour [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_minute"]
+opaque Col.minute [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_second"]
+opaque Col.second [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_millisecond"]
+opaque Col.millisecond [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_microsecond"]
+opaque Col.microsecond [IsTemporal d] : @& Col d → IO (Col .int64)
+@[extern "lean_arrow_nanosecond"]
+opaque Col.nanosecond [IsTemporal d] : @& Col d → IO (Col .int64)
+
+-- Cumulative
+@[extern "lean_arrow_cumulative_sum"]
+opaque Col.cumulativeSum [IsNumeric d] : @& Col d → IO (Col d)
+
+-- Slice / cast
+@[extern "lean_arrow_slice"]
+opaque Col.slice : @& Col d → @& UInt64 → @& UInt64 → IO (Col d)
+@[extern "lean_arrow_cast"]
+opaque Col.cast (d2 : Dtype) : @& Col d → IO (Col d2)
 
 end Arrow

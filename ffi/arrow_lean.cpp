@@ -62,6 +62,40 @@ static lean_obj_res io_err(const std::string& msg) {
 #define LEAN_ARROW_STATUS(expr) \
     { auto s_ = (expr); if (!s_.ok()) return io_err(s_.message()); }
 
+// Map Lean Dtype enum (uint8_t) to Arrow DataType
+static std::shared_ptr<arrow::DataType> dtype_to_arrow(uint8_t d) {
+    switch (d) {
+    case 0:  return arrow::boolean();
+    case 1:  return arrow::int8();
+    case 2:  return arrow::int16();
+    case 3:  return arrow::int32();
+    case 4:  return arrow::int64();
+    case 5:  return arrow::uint8();
+    case 6:  return arrow::uint16();
+    case 7:  return arrow::uint32();
+    case 8:  return arrow::uint64();
+    case 9:  return arrow::float32();
+    case 10: return arrow::float64();
+    case 11: return arrow::utf8();
+    case 12: return arrow::binary();
+    case 13: return arrow::date32();
+    case 14: return arrow::date64();
+    case 15: return arrow::time32(arrow::TimeUnit::SECOND);
+    case 16: return arrow::time32(arrow::TimeUnit::MILLI);
+    case 17: return arrow::time64(arrow::TimeUnit::MICRO);
+    case 18: return arrow::time64(arrow::TimeUnit::NANO);
+    case 19: return arrow::timestamp(arrow::TimeUnit::SECOND);
+    case 20: return arrow::timestamp(arrow::TimeUnit::MILLI);
+    case 21: return arrow::timestamp(arrow::TimeUnit::MICRO);
+    case 22: return arrow::timestamp(arrow::TimeUnit::NANO);
+    case 23: return arrow::duration(arrow::TimeUnit::SECOND);
+    case 24: return arrow::duration(arrow::TimeUnit::MILLI);
+    case 25: return arrow::duration(arrow::TimeUnit::MICRO);
+    case 26: return arrow::duration(arrow::TimeUnit::NANO);
+    default: return nullptr;
+    }
+}
+
 static inline bool opt_is_none(b_lean_obj_arg o) { return lean_is_scalar(o); }
 static inline b_lean_obj_arg opt_get(b_lean_obj_arg o) { return lean_ctor_get(o, 0); }
 
@@ -424,8 +458,57 @@ extern "C" LEAN_EXPORT lean_obj_res lean_arrow_col_get_string(b_lean_obj_arg col
     return lean_io_result_mk_ok(mk_some(lean_mk_string_from_bytes(sv.data(), sv.size())));
 }
 
+// Generic element getter — dispatches on Arrow type_id, boxes per Dtype.Lean
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_col_get(uint8_t /*d*/, b_lean_obj_arg col, uint64_t idx) {
+    auto& a = unwrap_col(col);
+    if ((int64_t)idx >= a->length()) return io_err("index out of bounds");
+    if (a->IsNull(idx)) return lean_io_result_mk_ok(mk_none());
+    switch (a->type_id()) {
+    case arrow::Type::BOOL:
+        return lean_io_result_mk_ok(mk_some(lean_box(
+            static_cast<const arrow::BooleanArray&>(*a).Value(idx))));
+    case arrow::Type::INT8:
+        return lean_io_result_mk_ok(mk_some(box_i8(
+            static_cast<const arrow::Int8Array&>(*a).Value(idx))));
+    case arrow::Type::INT16:
+        return lean_io_result_mk_ok(mk_some(box_i16(
+            static_cast<const arrow::Int16Array&>(*a).Value(idx))));
+    case arrow::Type::INT32: case arrow::Type::DATE32: case arrow::Type::TIME32:
+        return lean_io_result_mk_ok(mk_some(box_i32(
+            static_cast<const arrow::Int32Array&>(*a).Value(idx))));
+    case arrow::Type::INT64: case arrow::Type::DATE64: case arrow::Type::TIME64:
+    case arrow::Type::TIMESTAMP: case arrow::Type::DURATION:
+        return lean_io_result_mk_ok(mk_some(box_i64(
+            static_cast<const arrow::Int64Array&>(*a).Value(idx))));
+    case arrow::Type::UINT8:
+        return lean_io_result_mk_ok(mk_some(box_u8(
+            static_cast<const arrow::UInt8Array&>(*a).Value(idx))));
+    case arrow::Type::UINT16:
+        return lean_io_result_mk_ok(mk_some(box_u16(
+            static_cast<const arrow::UInt16Array&>(*a).Value(idx))));
+    case arrow::Type::UINT32:
+        return lean_io_result_mk_ok(mk_some(box_u32(
+            static_cast<const arrow::UInt32Array&>(*a).Value(idx))));
+    case arrow::Type::UINT64:
+        return lean_io_result_mk_ok(mk_some(box_u64(
+            static_cast<const arrow::UInt64Array&>(*a).Value(idx))));
+    case arrow::Type::FLOAT:
+        return lean_io_result_mk_ok(mk_some(lean_box_float32(
+            static_cast<const arrow::FloatArray&>(*a).Value(idx))));
+    case arrow::Type::DOUBLE:
+        return lean_io_result_mk_ok(mk_some(lean_box_float(
+            static_cast<const arrow::DoubleArray&>(*a).Value(idx))));
+    case arrow::Type::STRING: {
+        auto sv = static_cast<const arrow::StringArray&>(*a).GetView(idx);
+        return lean_io_result_mk_ok(mk_some(lean_mk_string_from_bytes(sv.data(), sv.size())));
+    }
+    default:
+        return io_err("Col.get: unsupported type " + a->type()->ToString());
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Compute: Arithmetic — d (uint8_t) + [IsNumeric d] instance + operands
+// Compute kernels — macros for the 5 FFI calling conventions
 // ---------------------------------------------------------------------------
 
 static lean_obj_res compute_binary(b_lean_obj_arg a, b_lean_obj_arg b, const char* fn_name) {
@@ -438,63 +521,98 @@ static lean_obj_res compute_unary(b_lean_obj_arg a, const char* fn_name) {
     return lean_io_result_mk_ok(wrap_col(result.make_array()));
 }
 
-// add/sub/mul/div: (uint8_t d, lean_object* inst, lean_object* a, lean_object* b)
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_add(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "add");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_sub(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "subtract");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_mul(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "multiply");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_div(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "divide");
-}
-// neg: (uint8_t d, lean_object* inst, lean_object* a)
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_neg(uint8_t, b_lean_obj_arg, b_lean_obj_arg a) {
-    return compute_unary(a, "negate");
+// (uint8_t d, inst, a, b) — binary with typeclass (arithmetic, bitwise, comparison with IsOrd)
+#define DEF_BINARY_TC(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) { \
+    return compute_binary(a, b, kernel); \
 }
 
-// ---------------------------------------------------------------------------
-// Compute: Comparison
-// eq/neq: (uint8_t d, lean_object* a, lean_object* b) — no typeclass
-// lt/gt/lte/gte: (uint8_t d, lean_object* inst, lean_object* a, lean_object* b) — [IsOrd d]
-// ---------------------------------------------------------------------------
-
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_eq(uint8_t, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "equal");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_neq(uint8_t, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "not_equal");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_lt(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "less");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_gt(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "greater");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_lte(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "less_equal");
-}
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_gte(uint8_t, b_lean_obj_arg, b_lean_obj_arg a, b_lean_obj_arg b) {
-    return compute_binary(a, b, "greater_equal");
+// (uint8_t d, a, b) — binary without typeclass (eq/neq, filter, take)
+#define DEF_BINARY(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(uint8_t, b_lean_obj_arg a, b_lean_obj_arg b) { \
+    return compute_binary(a, b, kernel); \
 }
 
-// ---------------------------------------------------------------------------
-// Compute: Vector ops
-// filter/take: (uint8_t d, lean_object* col, lean_object* arg)
-// sort/sortIndices: (uint8_t d, lean_object* inst, lean_object* col, uint8_t ascending)
-// unique: (uint8_t d, lean_object* col)
-// ---------------------------------------------------------------------------
-
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_filter(uint8_t, b_lean_obj_arg col, b_lean_obj_arg mask) {
-    return compute_binary(col, mask, "filter");
+// (uint8_t d, inst, a) — unary with typeclass (neg, abs, sqrt, trig, temporal, ...)
+#define DEF_UNARY_TC(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(uint8_t, b_lean_obj_arg, b_lean_obj_arg a) { \
+    return compute_unary(a, kernel); \
 }
 
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_take(uint8_t, b_lean_obj_arg col, b_lean_obj_arg indices) {
-    return compute_binary(col, indices, "take");
+// (uint8_t d, a) — unary without typeclass (unique, is_null, drop_null, ...)
+#define DEF_UNARY(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(uint8_t, b_lean_obj_arg a) { \
+    return compute_unary(a, kernel); \
 }
+
+// (a) — monomorphic unary, no d (string ops)
+#define DEF_UNARY_MONO(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(b_lean_obj_arg a) { \
+    return compute_unary(a, kernel); \
+}
+
+// (uint8_t d, inst, col) → Val — aggregation returning scalar
+#define DEF_AGG_TC(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(uint8_t, b_lean_obj_arg, b_lean_obj_arg col) { \
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction(kernel, {unwrap_col(col)})); \
+    return lean_io_result_mk_ok(wrap_val(result.scalar())); \
+}
+
+// String with MatchSubstringOptions: (col, pattern)
+#define DEF_STR_MATCH(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(b_lean_obj_arg col, b_lean_obj_arg pattern) { \
+    arrow::compute::MatchSubstringOptions opts(lean_string_cstr(pattern)); \
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction(kernel, {unwrap_col(col)}, &opts)); \
+    return lean_io_result_mk_ok(wrap_col(result.make_array())); \
+}
+
+// Arithmetic
+DEF_BINARY_TC(lean_arrow_add,   "add")
+DEF_BINARY_TC(lean_arrow_sub,   "subtract")
+DEF_BINARY_TC(lean_arrow_mul,   "multiply")
+DEF_BINARY_TC(lean_arrow_div,   "divide")
+DEF_BINARY_TC(lean_arrow_power, "power")
+DEF_UNARY_TC(lean_arrow_neg,   "negate")
+DEF_UNARY_TC(lean_arrow_abs,   "abs")
+DEF_UNARY_TC(lean_arrow_sqrt,  "sqrt")
+DEF_UNARY_TC(lean_arrow_sign,  "sign")
+DEF_UNARY_TC(lean_arrow_ceil,  "ceil")
+DEF_UNARY_TC(lean_arrow_floor, "floor")
+DEF_UNARY_TC(lean_arrow_trunc, "trunc")
+
+// Math/trig
+DEF_UNARY_TC(lean_arrow_sin,   "sin")
+DEF_UNARY_TC(lean_arrow_cos,   "cos")
+DEF_UNARY_TC(lean_arrow_tan,   "tan")
+DEF_UNARY_TC(lean_arrow_asin,  "asin")
+DEF_UNARY_TC(lean_arrow_acos,  "acos")
+DEF_UNARY_TC(lean_arrow_atan,  "atan")
+DEF_BINARY_TC(lean_arrow_atan2, "atan2")
+DEF_UNARY_TC(lean_arrow_ln,    "ln")
+DEF_UNARY_TC(lean_arrow_log2,  "log2")
+DEF_UNARY_TC(lean_arrow_log10, "log10")
+DEF_UNARY_TC(lean_arrow_log1p, "log1p")
+
+// Bitwise
+DEF_BINARY_TC(lean_arrow_bit_and,     "bit_wise_and")
+DEF_BINARY_TC(lean_arrow_bit_or,      "bit_wise_or")
+DEF_BINARY_TC(lean_arrow_bit_xor,     "bit_wise_xor")
+DEF_UNARY_TC(lean_arrow_bit_not,      "bit_wise_not")
+DEF_BINARY_TC(lean_arrow_shift_left,  "shift_left")
+DEF_BINARY_TC(lean_arrow_shift_right, "shift_right")
+
+// Comparison
+DEF_BINARY(lean_arrow_eq,  "equal")
+DEF_BINARY(lean_arrow_neq, "not_equal")
+DEF_BINARY_TC(lean_arrow_lt,  "less")
+DEF_BINARY_TC(lean_arrow_gt,  "greater")
+DEF_BINARY_TC(lean_arrow_lte, "less_equal")
+DEF_BINARY_TC(lean_arrow_gte, "greater_equal")
+
+// Vector ops
+DEF_BINARY(lean_arrow_filter, "filter")
+DEF_BINARY(lean_arrow_take,   "take")
+DEF_UNARY(lean_arrow_unique,  "unique")
 
 extern "C" LEAN_EXPORT lean_obj_res lean_arrow_sort(uint8_t, b_lean_obj_arg, b_lean_obj_arg col, uint8_t ascending) {
     auto order = ascending ? arrow::compute::SortOrder::Ascending : arrow::compute::SortOrder::Descending;
@@ -511,36 +629,96 @@ extern "C" LEAN_EXPORT lean_obj_res lean_arrow_sort_indices(uint8_t, b_lean_obj_
     return lean_io_result_mk_ok(wrap_col(result));
 }
 
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_unique(uint8_t, b_lean_obj_arg col) {
-    return compute_unary(col, "unique");
+// Validity / null handling
+DEF_UNARY(lean_arrow_is_nulls,   "is_null")
+DEF_UNARY(lean_arrow_is_valids,  "is_valid")
+DEF_UNARY_TC(lean_arrow_is_nan,    "is_nan")
+DEF_UNARY_TC(lean_arrow_is_inf,    "is_inf")
+DEF_UNARY_TC(lean_arrow_is_finite, "is_finite")
+DEF_UNARY(lean_arrow_drop_null,  "drop_null")
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_fill_null(uint8_t, b_lean_obj_arg col, b_lean_obj_arg fill) {
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("coalesce",
+        {unwrap_col(col), unwrap_col(fill)}));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// Conditional
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_if_else(uint8_t, b_lean_obj_arg cond, b_lean_obj_arg left, b_lean_obj_arg right) {
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("if_else",
+        {unwrap_col(cond), unwrap_col(left), unwrap_col(right)}));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// Set
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_is_in(uint8_t, b_lean_obj_arg col, b_lean_obj_arg value_set) {
+    arrow::compute::SetLookupOptions opts(unwrap_col(value_set));
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("is_in", {unwrap_col(col)}, &opts));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// String
+DEF_UNARY_MONO(lean_arrow_str_upper,   "utf8_upper")
+DEF_UNARY_MONO(lean_arrow_str_lower,   "utf8_lower")
+DEF_UNARY_MONO(lean_arrow_str_length,  "utf8_length")
+DEF_UNARY_MONO(lean_arrow_str_reverse, "utf8_reverse")
+DEF_STR_MATCH(lean_arrow_str_starts_with, "starts_with")
+DEF_STR_MATCH(lean_arrow_str_ends_with,  "ends_with")
+DEF_STR_MATCH(lean_arrow_str_contains,   "match_substring")
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_str_trim(b_lean_obj_arg col, b_lean_obj_arg chars) {
+    arrow::compute::TrimOptions opts(lean_string_cstr(chars));
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("utf8_trim", {unwrap_col(col)}, &opts));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_str_replace(b_lean_obj_arg col, b_lean_obj_arg pattern, b_lean_obj_arg replacement) {
+    arrow::compute::ReplaceSubstringOptions opts(lean_string_cstr(pattern), lean_string_cstr(replacement));
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("replace_substring", {unwrap_col(col)}, &opts));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// Temporal extraction
+DEF_UNARY_TC(lean_arrow_year,        "year")
+DEF_UNARY_TC(lean_arrow_month,       "month")
+DEF_UNARY_TC(lean_arrow_day,         "day")
+DEF_UNARY_TC(lean_arrow_day_of_week, "day_of_week")
+DEF_UNARY_TC(lean_arrow_day_of_year, "day_of_year")
+DEF_UNARY_TC(lean_arrow_hour,        "hour")
+DEF_UNARY_TC(lean_arrow_minute,      "minute")
+DEF_UNARY_TC(lean_arrow_second,      "second")
+DEF_UNARY_TC(lean_arrow_millisecond, "millisecond")
+DEF_UNARY_TC(lean_arrow_microsecond, "microsecond")
+DEF_UNARY_TC(lean_arrow_nanosecond,  "nanosecond")
+
+// Cumulative
+DEF_UNARY_TC(lean_arrow_cumulative_sum, "cumulative_sum")
+
+// Slice
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_slice(uint8_t, b_lean_obj_arg col, uint64_t offset, uint64_t length) {
+    return lean_io_result_mk_ok(wrap_col(unwrap_col(col)->Slice(offset, length)));
+}
+
+// Cast
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_cast(uint8_t, uint8_t d_tgt, b_lean_obj_arg col) {
+    auto tgt = dtype_to_arrow(d_tgt);
+    if (!tgt) return io_err("cast: unknown target dtype");
+    LEAN_ARROW_TRY(result, arrow::compute::Cast(unwrap_col(col), tgt));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
 }
 
 // ---------------------------------------------------------------------------
 // Val: Aggregation
-// sum/mean: (uint8_t d, lean_object* inst, lean_object* col) — [IsNumeric d]
-// min/max: (uint8_t d, lean_object* inst, lean_object* col) — [IsOrd d]
-// count/countDistinct: (uint8_t d, lean_object* col) — no typeclass
 // ---------------------------------------------------------------------------
 
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_sum(uint8_t, b_lean_obj_arg, b_lean_obj_arg col) {
-    LEAN_ARROW_TRY(result, arrow::compute::Sum(unwrap_col(col)));
-    return lean_io_result_mk_ok(wrap_val(result.scalar()));
-}
-
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_min_val(uint8_t, b_lean_obj_arg, b_lean_obj_arg col) {
-    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("min", {unwrap_col(col)}));
-    return lean_io_result_mk_ok(wrap_val(result.scalar()));
-}
-
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_max_val(uint8_t, b_lean_obj_arg, b_lean_obj_arg col) {
-    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("max", {unwrap_col(col)}));
-    return lean_io_result_mk_ok(wrap_val(result.scalar()));
-}
-
-extern "C" LEAN_EXPORT lean_obj_res lean_arrow_mean(uint8_t, b_lean_obj_arg, b_lean_obj_arg col) {
-    LEAN_ARROW_TRY(result, arrow::compute::Mean(unwrap_col(col)));
-    return lean_io_result_mk_ok(wrap_val(result.scalar()));
-}
+DEF_AGG_TC(lean_arrow_sum,           "sum")
+DEF_AGG_TC(lean_arrow_min_val,       "min")
+DEF_AGG_TC(lean_arrow_max_val,       "max")
+DEF_AGG_TC(lean_arrow_mean,          "mean")
+DEF_AGG_TC(lean_arrow_product,       "product")
+DEF_AGG_TC(lean_arrow_variance,      "variance")
+DEF_AGG_TC(lean_arrow_stddev,        "stddev")
+DEF_AGG_TC(lean_arrow_approx_median, "approximate_median")
 
 extern "C" LEAN_EXPORT lean_obj_res lean_arrow_count(uint8_t, b_lean_obj_arg col) {
     LEAN_ARROW_TRY(result, arrow::compute::CallFunction("count", {unwrap_col(col)}));
@@ -552,6 +730,18 @@ extern "C" LEAN_EXPORT lean_obj_res lean_arrow_count_distinct(uint8_t, b_lean_ob
     LEAN_ARROW_TRY(result, arrow::compute::CallFunction("count_distinct", {unwrap_col(col)}));
     auto count_scalar = std::static_pointer_cast<arrow::Int64Scalar>(result.scalar());
     return lean_io_result_mk_ok(lean_uint64_to_nat(count_scalar->value));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_any(b_lean_obj_arg col) {
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("any", {unwrap_col(col)}));
+    auto s = std::static_pointer_cast<arrow::BooleanScalar>(result.scalar());
+    return lean_io_result_mk_ok(lean_box(s->is_valid && s->value));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_all(b_lean_obj_arg col) {
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("all", {unwrap_col(col)}));
+    auto s = std::static_pointer_cast<arrow::BooleanScalar>(result.scalar());
+    return lean_io_result_mk_ok(lean_box(s->is_valid && s->value));
 }
 
 // ---------------------------------------------------------------------------

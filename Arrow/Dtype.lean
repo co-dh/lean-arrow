@@ -13,7 +13,7 @@ inductive Dtype where
   deriving Repr, BEq, Inhabited
 
 -- Lean host type for each Dtype
-def Dtype.Lean : Dtype → Type
+@[reducible] def Dtype.Lean : Dtype → Type
   | .bool => Bool
   | .int8 => Int8 | .int16 => Int16 | .int32 => Int32 | .int64 => Int64
   | .uint8 => UInt8 | .uint16 => UInt16 | .uint32 => UInt32 | .uint64 => UInt64
@@ -41,6 +41,17 @@ instance : IsNumeric .duration_s where
 instance : IsNumeric .duration_ms where
 instance : IsNumeric .duration_us where
 instance : IsNumeric .duration_ns where
+
+-- Integral types: support bitwise operations
+class IsIntegral (d : Dtype) where
+instance : IsIntegral .int8 where
+instance : IsIntegral .int16 where
+instance : IsIntegral .int32 where
+instance : IsIntegral .int64 where
+instance : IsIntegral .uint8 where
+instance : IsIntegral .uint16 where
+instance : IsIntegral .uint32 where
+instance : IsIntegral .uint64 where
 
 -- Orderable types: support comparison and sort
 class IsOrd (d : Dtype) where
