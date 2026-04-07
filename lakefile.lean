@@ -12,9 +12,15 @@ package «lean-arrow» where
 lean_lib Arrow where
   precompileModules := true
 
+lean_lib Apl where
+  precompileModules := true
+
 @[default_target]
 lean_exe test where
   root := `Test
+
+lean_exe apltest where
+  root := `AplTest
 
 target ffi.o pkg : FilePath := do
   let oFile := pkg.buildDir / "ffi" / "arrow_lean.o"

@@ -708,6 +708,158 @@ extern "C" LEAN_EXPORT lean_obj_res lean_arrow_cast(uint8_t, uint8_t d_tgt, b_le
 }
 
 // ---------------------------------------------------------------------------
+// Array primitives (for APL compiler support)
+// ---------------------------------------------------------------------------
+
+// iota: [0, 1, 2, ..., n-1]
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_iota(uint64_t n) {
+    arrow::Int64Builder builder;
+    LEAN_ARROW_STATUS(builder.Reserve(n));
+    for (int64_t i = 0; i < (int64_t)n; i++) builder.UnsafeAppend(i);
+    LEAN_ARROW_TRY(result, builder.Finish());
+    return lean_io_result_mk_ok(wrap_col(result));
+}
+
+// where: bool mask → int64 indices where true
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_where(b_lean_obj_arg col) {
+    auto& ba = static_cast<const arrow::BooleanArray&>(*unwrap_col(col));
+    int64_t n = ba.length();
+    arrow::Int64Builder builder;
+    for (int64_t i = 0; i < n; i++) {
+        if (ba.IsValid(i) && ba.Value(i)) { LEAN_ARROW_STATUS(builder.Append(i)); }
+    }
+    LEAN_ARROW_TRY(result, builder.Finish());
+    return lean_io_result_mk_ok(wrap_col(result));
+}
+
+// indexOf: for each element of needles, return its position in haystack (null if absent)
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_index_of(uint8_t, b_lean_obj_arg haystack, b_lean_obj_arg needles) {
+    arrow::compute::SetLookupOptions opts(unwrap_col(haystack));
+    LEAN_ARROW_TRY(result, arrow::compute::CallFunction("index_in", {unwrap_col(needles)}, &opts));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// scatter: result[indices[i]] = values[i], other positions from src
+// Generic via concat + take: works for any Arrow type
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_scatter(uint8_t, b_lean_obj_arg col, b_lean_obj_arg indices, b_lean_obj_arg values) {
+    auto& src = unwrap_col(col);
+    auto& idx_arr = static_cast<const arrow::Int64Array&>(*unwrap_col(indices));
+    auto& vals = unwrap_col(values);
+    int64_t n = src->length();
+
+    // Build selection: sel[i] = i (from src) unless overridden → n + j (from vals)
+    arrow::Int64Builder sel_builder;
+    LEAN_ARROW_STATUS(sel_builder.Reserve(n));
+    std::vector<int64_t> sel(n);
+    for (int64_t i = 0; i < n; i++) sel[i] = i;
+    for (int64_t j = 0; j < idx_arr.length(); j++) {
+        if (idx_arr.IsValid(j)) {
+            int64_t pos = idx_arr.Value(j);
+            if (pos >= 0 && pos < n) sel[pos] = n + j;
+        }
+    }
+    for (int64_t i = 0; i < n; i++) sel_builder.UnsafeAppend(sel[i]);
+    LEAN_ARROW_TRY(sel_arr, sel_builder.Finish());
+
+    LEAN_ARROW_TRY(combined, arrow::Concatenate({src, vals}));
+    LEAN_ARROW_TRY(result, arrow::compute::Take(combined, sel_arr));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// Logical ops on bool columns (Arrow "and"/"or"/"xor"/"invert")
+#define DEF_BINARY_MONO(name, kernel) \
+extern "C" LEAN_EXPORT lean_obj_res name(b_lean_obj_arg a, b_lean_obj_arg b) { \
+    return compute_binary(a, b, kernel); \
+}
+
+DEF_BINARY_MONO(lean_arrow_log_and, "and")
+DEF_BINARY_MONO(lean_arrow_log_or,  "or")
+DEF_BINARY_MONO(lean_arrow_log_xor, "xor")
+DEF_UNARY_MONO(lean_arrow_log_not,  "invert")
+
+// Cumulative scans for bool arrays (XOR/AND/OR)
+template <typename F>
+static lean_obj_res cum_bool_scan(b_lean_obj_arg col, bool identity, F op) {
+    auto& ba = static_cast<const arrow::BooleanArray&>(*unwrap_col(col));
+    int64_t n = ba.length();
+    arrow::BooleanBuilder builder;
+    LEAN_ARROW_STATUS(builder.Reserve(n));
+    bool acc = identity;
+    for (int64_t i = 0; i < n; i++) {
+        if (ba.IsNull(i)) { builder.UnsafeAppendNull(); }
+        else { acc = op(acc, ba.Value(i)); builder.UnsafeAppend(acc); }
+    }
+    LEAN_ARROW_TRY(result, builder.Finish());
+    return lean_io_result_mk_ok(wrap_col(result));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_cumulative_xor(b_lean_obj_arg col) {
+    return cum_bool_scan(col, false, [](bool a, bool b) { return a ^ b; });
+}
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_cumulative_and(b_lean_obj_arg col) {
+    return cum_bool_scan(col, true, [](bool a, bool b) { return a && b; });
+}
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_cumulative_or(b_lean_obj_arg col) {
+    return cum_bool_scan(col, false, [](bool a, bool b) { return a || b; });
+}
+
+// reverse: generic via descending-index take
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_reverse_col(uint8_t, b_lean_obj_arg col) {
+    auto& a = unwrap_col(col);
+    int64_t n = a->length();
+    arrow::Int64Builder idx_builder;
+    LEAN_ARROW_STATUS(idx_builder.Reserve(n));
+    for (int64_t i = n - 1; i >= 0; i--) idx_builder.UnsafeAppend(i);
+    LEAN_ARROW_TRY(idx, idx_builder.Finish());
+    LEAN_ARROW_TRY(result, arrow::compute::Take(a, idx));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// replicate: expand col by integer counts. counts[i] = number of copies of col[i]
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_replicate(uint8_t, b_lean_obj_arg col, b_lean_obj_arg counts) {
+    auto& src = unwrap_col(col);
+    auto& cnt = static_cast<const arrow::Int64Array&>(*unwrap_col(counts));
+    int64_t n = cnt.length();
+    // Build index array: repeat i cnt[i] times
+    arrow::Int64Builder idx_builder;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t c = cnt.IsValid(i) ? cnt.Value(i) : 0;
+        for (int64_t j = 0; j < c; j++) { LEAN_ARROW_STATUS(idx_builder.Append(i)); }
+    }
+    LEAN_ARROW_TRY(idx, idx_builder.Finish());
+    LEAN_ARROW_TRY(result, arrow::compute::Take(src, idx));
+    return lean_io_result_mk_ok(wrap_col(result.make_array()));
+}
+
+// fill: constant array of n copies of a value
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_fill_int64(uint64_t n, int64_t val) {
+    arrow::Int64Builder builder;
+    LEAN_ARROW_STATUS(builder.Reserve(n));
+    for (int64_t i = 0; i < (int64_t)n; i++) builder.UnsafeAppend(val);
+    LEAN_ARROW_TRY(result, builder.Finish());
+    return lean_io_result_mk_ok(wrap_col(result));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_fill_float64(uint64_t n, double val) {
+    arrow::DoubleBuilder builder;
+    LEAN_ARROW_STATUS(builder.Reserve(n));
+    for (int64_t i = 0; i < (int64_t)n; i++) builder.UnsafeAppend(val);
+    LEAN_ARROW_TRY(result, builder.Finish());
+    return lean_io_result_mk_ok(wrap_col(result));
+}
+
+// fromString: String → Col .uint8 (byte array of char codes)
+extern "C" LEAN_EXPORT lean_obj_res lean_arrow_from_string(b_lean_obj_arg s) {
+    const char* data = lean_string_cstr(s);
+    size_t len = lean_string_size(s) - 1; // exclude null terminator
+    arrow::UInt8Builder builder;
+    LEAN_ARROW_STATUS(builder.Reserve(len));
+    for (size_t i = 0; i < len; i++) builder.UnsafeAppend((uint8_t)data[i]);
+    LEAN_ARROW_TRY(result, builder.Finish());
+    return lean_io_result_mk_ok(wrap_col(result));
+}
+
+// ---------------------------------------------------------------------------
 // Val: Aggregation
 // ---------------------------------------------------------------------------
 

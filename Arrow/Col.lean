@@ -308,4 +308,60 @@ opaque Col.slice : @& Col d → @& UInt64 → @& UInt64 → IO (Col d)
 @[extern "lean_arrow_cast"]
 opaque Col.cast (d2 : Dtype) : @& Col d → IO (Col d2)
 
+-- ---------------------------------------------------------------------------
+-- Array primitives (for APL compiler support)
+-- ---------------------------------------------------------------------------
+
+-- iota: [0, 1, ..., n-1]
+@[extern "lean_arrow_iota"]
+opaque Col.iota : @& UInt64 → IO (Col .int64)
+
+-- where: bool mask → indices where true
+@[extern "lean_arrow_where"]
+opaque Col.where : @& Col .bool → IO (Col .int64)
+
+-- indexOf: for each element of needles, position in haystack (null if absent)
+@[extern "lean_arrow_index_of"]
+opaque Col.indexOf : @& Col d → @& Col d → IO (Col .int32)
+
+-- scatter: result[indices[i]] = values[i], else from original
+@[extern "lean_arrow_scatter"]
+opaque Col.scatter : @& Col d → @& Col .int64 → @& Col d → IO (Col d)
+
+-- Logical ops on bool columns
+@[extern "lean_arrow_log_and"]
+opaque Col.logAnd : @& Col .bool → @& Col .bool → IO (Col .bool)
+@[extern "lean_arrow_log_or"]
+opaque Col.logOr : @& Col .bool → @& Col .bool → IO (Col .bool)
+@[extern "lean_arrow_log_xor"]
+opaque Col.logXor : @& Col .bool → @& Col .bool → IO (Col .bool)
+@[extern "lean_arrow_log_not"]
+opaque Col.logNot : @& Col .bool → IO (Col .bool)
+
+-- Cumulative boolean scans
+@[extern "lean_arrow_cumulative_xor"]
+opaque Col.cumulativeXor : @& Col .bool → IO (Col .bool)
+@[extern "lean_arrow_cumulative_and"]
+opaque Col.cumulativeAnd : @& Col .bool → IO (Col .bool)
+@[extern "lean_arrow_cumulative_or"]
+opaque Col.cumulativeOr : @& Col .bool → IO (Col .bool)
+
+-- reverse (generic)
+@[extern "lean_arrow_reverse_col"]
+opaque Col.reverseCol : @& Col d → IO (Col d)
+
+-- replicate: expand col by integer counts
+@[extern "lean_arrow_replicate"]
+opaque Col.replicate : @& Col d → @& Col .int64 → IO (Col d)
+
+-- fill: constant array
+@[extern "lean_arrow_fill_int64"]
+opaque Col.fillInt64 : @& UInt64 → @& Int64 → IO (Col .int64)
+@[extern "lean_arrow_fill_float64"]
+opaque Col.fillFloat64 : @& UInt64 → @& Float → IO (Col .float64)
+
+-- fromString: String → byte array
+@[extern "lean_arrow_from_string"]
+opaque Col.fromString : @& String → IO (Col .uint8)
+
 end Arrow
