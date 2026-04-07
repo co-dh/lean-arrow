@@ -369,11 +369,21 @@ partial def evalTokens (tokTypes tokVals : Col .int64) : IO Val := do
           let left ← if nums.size == 1 then pure (Val.int nums[0]!)
             else pure (Val.ivec (← Col.int64s (nums.reverse.map some)))
           stack := stack.push (← Apl.dyad val left right)
-        else if nextTy == 4 then -- left arg is result of paren expression (on stack)
-          -- The rparen's result should already be on the stack from paren processing
-          -- Actually in right-to-left, we process rparen first. So left arg would be already evaluated.
-          -- For simplicity: apply monadic
-          stack := stack.push (← Apl.monad val right)
+        else if nextTy == 4 then -- left arg is paren expression → evaluate and apply dyadic
+          i := i - 1  -- consume the )
+          let mut depth : Int64 := 1
+          let mut subTypes : Array (Option Int64) := #[]
+          let mut subVals : Array (Option Int64) := #[]
+          while i > 0 && depth > 0 do
+            i := i - 1
+            let t ← match ← tokTypes[i] with | some v => pure v | none => pure (-1)
+            if t == 4 then depth := depth + 1
+            else if t == 3 then depth := depth - 1
+            if depth > 0 then
+              subTypes := subTypes.push (some t)
+              subVals := subVals.push (← tokVals[i])
+          let left ← evalTokens (← Col.int64s subTypes.reverse) (← Col.int64s subVals.reverse)
+          stack := stack.push (← Apl.dyad val left right)
         else
           stack := stack.push (← Apl.monad val right)
       else
